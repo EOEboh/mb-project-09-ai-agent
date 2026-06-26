@@ -1,77 +1,228 @@
-**The rule:** AI communication only lives in `ai/`. Handlers never call `http.Post` to Ollama directly. This makes it trivially easy to swap providers.
+# Project 09: AI Agent with Tool Use
+
+Part of **Build 10 AI Projects in 30 Days** using Go 1.22+, Ollama, and HTMX.
+
+---
+
+## What You Will Build
+
+A ReAct (Reasoning + Acting) agent built entirely from scratch -- no external agent frameworks. The user types a question into a chat-style interface. The agent:
+
+1. **Thinks** -- generates a Thought explaining its reasoning.
+2. **Acts** -- selects a tool and provides an input for it.
+3. **Observes** -- receives the tool's result.
+4. Repeats steps 1-3 until it has enough information to write a **Final Answer**.
+
+Each step (Thought, Action, Observation) streams to the browser in real-time as a fully-formed HTML card via Server-Sent Events. You can watch the agent's entire reasoning chain unfold before your eyes.
+
+### The Three Tools
+
+| Tool | What it does |
+|------|-------------|
+| `calculator` | Evaluates math expressions using `github.com/expr-lang/expr`. Supports `+`, `-`, `*`, `/`, `sqrt()`, `pow()`, `round()`, `pi`, and more. |
+| `datetime` | Returns current date/time info using Go's `time` package. Accepts `now`, `date`, `time`, `day`, `year`, or `timestamp`. |
+| `unit_convert` | Converts between temperature (Celsius/Fahrenheit/Kelvin), length (meters/km/miles/feet/inches/cm), weight (grams/kg/pounds/ounces), and speed (km/h, mph, m/s). Zero external packages. |
+
+---
+
+## Key Concepts Introduced
+
+| Concept | What It Teaches |
+|---------|----------------|
+| ReAct pattern | Reasoning and Acting loop: Thought, Action, Observation, repeat |
+| Tool interface | A clean Go interface that makes adding new tools trivial |
+| Agent loop with max steps | Safety cap preventing infinite loops |
+| Conversation history accumulation | Each step appends to messages; the model sees the full history |
+| SSE HTML fragment streaming | Streaming complete HTML cards vs raw text tokens (Project 01) |
+| `github.com/expr-lang/expr` | Safe, sandboxed expression evaluation for the calculator tool |
+| Execution tracing | Displaying the agent's internal reasoning steps to the user |
+
+---
+
+## Architecture
+
+```
+Browser                     Go Server                    Ollama
+  |                             |                           |
+  |-- GET /stream?q=question -->|                           |
+  |                             |-- Chat(system+question) ->|
+  |                             |<-- Thought+Action --------|
+  |                             |                           |
+  |                             | [execute tool locally]    |
+  |                             |                           |
+  |                             |-- Chat(+observation) ---->|
+  |                             |<-- Thought+Action --------|
+  |                             |                           |
+  |<-- SSE: step card HTML -----|   (repeat up to 8 times)  |
+  |                             |                           |
+  |                             |-- Chat(+observation) ---->|
+  |                             |<-- Final Answer ----------|
+  |<-- SSE: final card HTML ----|                           |
+  |<-- SSE: [DONE] -------------|                           |
+```
+
+The agent loop runs in `agent/agent.go`. The loop calls `ai.Chat()` (blocking, not streaming) because it needs the **complete** response to parse the Thought/Action/Final Answer structure. The SSE streaming is of completed step cards -- one HTML fragment per agent step.
 
 ---
 
 ## Prerequisites
 
-- [Go 1.22+](https://go.dev/dl/)
-- [Ollama](https://ollama.com) installed and running (the Mac app auto-starts; run `ollama serve` only if using the CLI)
-
-## Quick Start
+- Go 1.22+
+- [Ollama](https://ollama.ai) running locally
 
 ```bash
-# 1. Clone or use this as a GitHub template
-git clone https://github.com/EOEboh/mb-bootcamp-scaffold my-project
-cd my-project
+ollama pull llama3.2:3b
+```
 
-# 2. Replace the module name in go.mod
-# Change: github.com/EOEboh/mb-bootcamp-scaffold
-# To:     github.com/EOEboh/my-project-name
+---
 
-# 3. Pull the required models (first time only — ~6 GB total)
+## Getting Started
+
+```bash
+# Clone and set up
+git clone <repo-url>
+cd mb-project-09-ai-agent
 make setup
 
-# 4. Run
+# Run the server
 make run
-# → http://localhost:8080
+# -> http://localhost:8080
 ```
 
 ---
 
-## The ai/ Package API
+## Demo Questions
 
-Every project uses exactly two functions:
+These questions exercise different tools and multi-step reasoning:
+
+1. **Single tool, one step:**
+   `What is sqrt(144) + 15% of 200?`
+   The agent calls `calculator` twice (or builds one expression) and sums the results.
+
+2. **Unit conversion:**
+   `Convert 72 fahrenheit to celsius`
+   One step: calls `unit_convert` with `72 fahrenheit to celsius`.
+
+3. **Date/time awareness:**
+   `What day of the week is it today?`
+   Calls `datetime` with input `day`, then returns the result.
+
+4. **Multi-step, two tools:**
+   `How many kilometers are in 26.2 miles, and what is 26.2 multiplied by 1.60934?`
+   Step 1: `unit_convert` (26.2 miles to km). Step 2: `calculator` (26.2 * 1.60934). Final step: compares both results.
+
+5. **Multi-step with reasoning:**
+   `What is the current year, and what is that year minus 1969?`
+   Step 1: `datetime` with `year`. Step 2: `calculator` using the year from step 1. The model must carry the intermediate result across steps -- this is conversation history accumulation in action.
+
+6. **Pure math:**
+   `What is pow(2, 10) + round(pi * 100)?`
+   Tests the calculator's named function support.
+
+7. **Chain of conversions:**
+   `If I run 5 miles per day for 7 days, how many kilometers is that total?`
+   Step 1: `unit_convert` (5 miles to km). Step 2: `calculator` (result * 7).
+
+---
+
+## Project Structure
+
+```
+mb-project-09-ai-agent/
+├── main.go               Entry point, HTTP routes
+├── go.mod                Module: github.com/EOEboh/mb-project-09-ai-agent
+├── Makefile
+├── .env.example
+├── README.md
+├── agent/
+│   ├── agent.go          ReAct loop, Step type, parseStep, system prompt
+│   └── tools.go          Tool interface + Calculator + Datetime + UnitConverter
+├── ai/
+│   └── ollama.go         Chat() and ChatStream() -- identical to scaffold
+├── handlers/
+│   └── agent.go          Index + Stream SSE handler + renderStep
+├── templates/
+│   └── index.html        Single named template "index"
+└── static/
+    └── style.css
+```
+
+---
+
+## How the ReAct Loop Works
 
 ```go
-// Non-streaming: returns the full response as a string
-response, err := ai.Chat(ai.DefaultModel, []ai.Message{
-    {Role: "system", Content: "You are a helpful assistant."},
-    {Role: "user",   Content: "Hello!"},
-})
+messages = [system, user:question]
 
-// Streaming: calls onChunk for each token as it arrives
-err := ai.ChatStream(ai.DefaultModel, messages, func(chunk string) error {
-    fmt.Println(chunk) // do something with each token
-    return nil         // return error to abort stream early
-})
+for step 1..maxSteps:
+    raw = ai.Chat(DefaultModel, messages)
+    step = parseStep(raw)
+
+    if step.IsFinal:
+        onStep(step)             // stream final card
+        return step.FinalAnswer
+
+    step.Observation = tool.Run(step.ActionInput)
+    onStep(step)                 // stream intermediate card
+
+    messages = append(messages,
+        {role:"assistant", content: raw},
+        {role:"user",      content: "Observation: " + step.Observation},
+    )
+
+return error("exceeded max steps")
 ```
 
----
-
-## Stack
-
-| Layer      | Technology                |
-|------------|---------------------------|
-| Backend    | Go 1.22+                  |
-| LLM        | Ollama (local)            |
-| Frontend   | HTMX + Vanilla JS         |
-| Database   | SQLite (projects 4, 5, 10)|
-| Streaming  | SSE / WebSockets          |
-| Deploy     | Docker (project 10)       |
+The key insight: the model sees **its own reasoning AND all tool results** on every subsequent call. This is what lets it build toward a final answer across multiple steps.
 
 ---
 
-## Projects Built on This Scaffold
+## Adding a New Tool
 
-| #  | Project                  | Key Addition                        | Repo                                                                                        |
-|----|--------------------------|-------------------------------------|---------------------------------------------------------------------------------------------|
-| 1  | AI Chat Interface        | SSE streaming                       | [mb-project-01-chat](https://github.com/EOEboh/mb-project-01-chat)                         |
-| 2  | Code Snippet Explainer   | System prompts + code models        | [mb-project-02-code-explainer](https://github.com/EOEboh/mb-project-02-code-explainer)     |
-| 3  | Smart Text Summarizer    | HTMX + prompt engineering           | [mb-project-03-summarizer](https://github.com/EOEboh/mb-project-03-summarizer)             |
-| 4  | AI Resume Analyzer       | File uploads + PDF extraction       | [mb-project-04-resume-analyzer](https://github.com/EOEboh/mb-project-04-resume-analyzer)   |
-| 5  | AI Writing Assistant     | SQLite + contextual AI commands     | [mb-project-05-writing-assistant](https://github.com/EOEboh/mb-project-05-writing-assistant)|
-| 6  | Image Caption Generator  | Multimodal (LLaVA vision model)     | [mb-project-06-image-captioner](https://github.com/EOEboh/mb-project-06-image-captioner)   |
-| 7  | API Doc Generator        | Multi-pass prompting + export       | [mb-project-07-api-doc-generator](https://github.com/EOEboh/mb-project-07-api-doc-generator)|
-| 8  | Meeting Notes Summarizer | Whisper audio pipeline              | [mb-project-08-meeting-notes](https://github.com/EOEboh/mb-project-08-meeting-notes)       |
-| 9  | AI Agent with Tool Use   | ReAct pattern + tool dispatch       | [mb-project-09-ai-agent](https://github.com/EOEboh/mb-project-09-ai-agent)                 |
-| 10 | Full-Stack AI SaaS       | JWT + multi-tenancy + Docker        | [mb-project-10-ai-saas](https://github.com/EOEboh/mb-project-10-ai-saas)                   |
+Implement the `Tool` interface in `agent/tools.go`:
+
+```go
+type MyTool struct{}
+
+func (t *MyTool) Name()        string { return "my_tool" }
+func (t *MyTool) Description() string { return "What it does and input format." }
+func (t *MyTool) Run(input string) (string, error) {
+    // ... your logic
+    return result, nil
+}
+```
+
+Then register it in `Registry()`. That's all -- the agent loop, system prompt, and SSE handler all pick it up automatically.
+
+---
+
+## Possible Extensions
+
+| Extension | Description |
+|-----------|-------------|
+| Web search tool | Add a tool that calls a search API (e.g. Brave Search) and returns snippets. This turns the agent into a research assistant. |
+| Persistent memory tool | A tool that reads/writes to a JSON file, letting the agent "remember" facts across sessions. |
+| File reader tool | Parse uploaded CSV or text files; the agent can answer questions about the data. |
+| Code execution tool | Run Go or Python snippets in a sandbox and return stdout. Enables a code-writing agent. |
+| Multi-agent orchestration | One "planner" agent breaks a complex task into sub-questions, dispatches them to specialized agents, then synthesizes the results. |
+
+---
+
+## What Is Next
+
+**Project 10: Full-Stack AI SaaS**
+
+The final project brings everything together: JWT authentication, multi-tenant user accounts, a persistent conversation database, Docker containerization, and a production-grade HTMX frontend. It is the capstone of the series.
+
+---
+
+## Commands
+
+```
+run     Start the development server
+build   Compile to ./bin/app
+tidy    Download dependencies
+clean   Remove build artifacts
+setup   Download Go dependencies and confirm Ollama model
+help    List all available commands
+```
