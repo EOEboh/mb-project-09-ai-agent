@@ -1,26 +1,27 @@
-.PHONY: run build tidy setup
+.PHONY: run build tidy clean setup help
 
-## run: start your development server
+## run: start the development server
 run:
 	go run main.go
 
-## build: compile your app to ./bin/app
+## build: compile to ./bin/app
 build:
 	@mkdir -p bin
 	go build -o bin/app .
 
-## tidy: clean up go.mod and go.sum
+## tidy: download dependencies
 tidy:
 	go mod tidy
 
-## setup: pull the Ollama models used in this bootcamp
-setup:
-	@echo "Pulling models — this may take a few minutes on first run..."
-	ollama pull llama3.2:3b
-	ollama pull nomic-embed-text
-	ollama pull llava:7b
-	@echo "✅ Models ready"
+## clean: remove build artifacts
+clean:
+	rm -rf bin/
 
-## help: list available commands
+## setup: download Go dependencies and confirm Ollama model
+setup:
+	go mod tidy
+	ollama pull llama3.2:3b
+
+## help: list all available commands
 help:
 	@grep -E '^##' Makefile | sed 's/## //'
