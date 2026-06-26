@@ -1,17 +1,166 @@
-<!DOCTYPE html>
+{{define "index"}}<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bootcamp Scaffold</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <!-- HTMX: progressive enhancement for server interactions -->
-    <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Agent - Project 09</title>
+
+  <!-- Google Fonts: identical across all bootcamp projects -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- HTMX loaded per series convention, though agent interaction uses raw EventSource -->
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 </head>
 <body>
-    <main>
-        <h1>Bootcamp Scaffold</h1>
-        <p>Replace this template with your own project UI</p>
-    </main>
+<div class="container">
+
+  <!-- ── Header (identical logo/badge pattern across all projects) ── -->
+  <header>
+    <div class="logo">◈</div>
+    <h1>AI Agent</h1>
+    <span class="model-badge">llama3.2:3b · ollama</span>
+  </header>
+
+  <!-- ── Intro ── -->
+  <p class="intro">Ask me anything that needs a tool to answer. I will reason step-by-step and show you my work.</p>
+
+  <!-- ── Question form ── -->
+  <!-- Submitted via JavaScript (preventDefault) to start an EventSource connection. -->
+  <form id="agent-form">
+    <div class="form-row">
+      <input
+        id="question-input"
+        type="text"
+        placeholder="e.g. What is 15% of 347?"
+        autocomplete="off"
+        autofocus
+      >
+      <button id="ask-btn" class="btn-ask" type="submit">
+        <span class="btn-label">Ask</span>
+        <span class="spinner-ring"></span>
+      </button>
+    </div>
+  </form>
+
+  <!-- ── Tool availability badges ── -->
+  <div class="tool-pills">
+    <span>Available tools:</span>
+    <span class="tool-pill">calculator</span>
+    <span class="tool-pill">datetime</span>
+    <span class="tool-pill">unit_convert</span>
+  </div>
+
+  <!-- ── Agent trace ── -->
+  <!-- Step cards are inserted here by the EventSource onmessage handler. -->
+  <div class="trace-header">Agent Trace</div>
+  <div id="trace"></div>
+
+  <!-- ── Example questions ── -->
+  <div class="examples-section">
+    <div class="examples-label">Try these examples</div>
+    <div class="examples-list">
+      <button class="example-btn" data-q="What is sqrt(144) + 15% of 200?">What is sqrt(144) + 15%% of 200?</button>
+      <button class="example-btn" data-q="Convert 72 fahrenheit to celsius">Convert 72 fahrenheit to celsius</button>
+      <button class="example-btn" data-q="What day of the week is it today?">What day of the week is it today?</button>
+      <button class="example-btn" data-q="How many kilometers are in 26.2 miles, and what is 26.2 * 1.60934?">How many km are in 26.2 miles, and what is 26.2 * 1.60934?</button>
+      <button class="example-btn" data-q="What is the current year, and what is that year minus 1969?">What is the current year, and what is that year minus 1969?</button>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+  // ── DOM refs ────────────────────────────────────────────────────────────────
+  const form         = document.getElementById('agent-form');
+  const questionInput = document.getElementById('question-input');
+  const askBtn       = document.getElementById('ask-btn');
+  const trace        = document.getElementById('trace');
+
+  // ── Loading state ───────────────────────────────────────────────────────────
+  function setLoading(on) {
+    if (on) {
+      askBtn.disabled = true;
+      askBtn.classList.add('is-loading');
+    } else {
+      askBtn.disabled = false;
+      askBtn.classList.remove('is-loading');
+    }
+  }
+
+  // ── XSS safety for displaying the user's question ──────────────────────────
+  // We insert the question into innerHTML via .question-display, so we must
+  // escape it. Step card HTML comes from the server (already escaped there).
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Track the active EventSource so we can close it if the user re-submits.
+  let activeSource = null;
+
+  // ── Form submit (main interaction) ─────────────────────────────────────────
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    const question = questionInput.value.trim();
+    if (!question) return;
+
+    // Close any previous stream.
+    if (activeSource) {
+      activeSource.close();
+      activeSource = null;
+    }
+
+    // Reset the trace and show the question at the top.
+    trace.innerHTML =
+      '<div class="question-display">&#10067; ' + escapeHtml(question) + '</div>';
+
+    setLoading(true);
+
+    // Open an SSE connection. The question is URL-encoded as a query parameter
+    // because EventSource only supports GET requests.
+    const source = new EventSource('/stream?q=' + encodeURIComponent(question));
+    activeSource = source;
+
+    source.onmessage = function(e) {
+      // [DONE] is the sentinel the server sends when the agent loop finishes.
+      if (e.data === '[DONE]') {
+        source.close();
+        activeSource = null;
+        setLoading(false);
+        return;
+      }
+      // Each event is a complete HTML fragment (one step card).
+      // insertAdjacentHTML is faster than trace.innerHTML += and safer than
+      // innerHTML for incremental appends.
+      trace.insertAdjacentHTML('beforeend', e.data);
+      // Auto-scroll to show the latest step.
+      trace.scrollTop = trace.scrollHeight;
+    };
+
+    source.onerror = function() {
+      source.close();
+      activeSource = null;
+      setLoading(false);
+    };
+  });
+
+  // ── Example question buttons ────────────────────────────────────────────────
+  document.querySelectorAll('.example-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      questionInput.value = btn.getAttribute('data-q');
+      // Trigger the form submission programmatically.
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+  });
+</script>
 </body>
 </html>
+{{end}}
